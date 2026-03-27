@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$SCRIPT_DIR/../temp"
 BASE_DIR="${BASE_DIR:-$(cd "$SCRIPT_DIR/../temp" && pwd)}"
 HOSTFILE="${HOSTFILE:-$BASE_DIR/../configs/hostsfile.txt}"
 VENV="${VENV:-$BASE_DIR/.venv}"

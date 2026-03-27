@@ -4,6 +4,7 @@ set -euo pipefail
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$SCRIPT_DIR/../temp"
 BASE_DIR="${BASE_DIR:-$(cd "$SCRIPT_DIR/../temp" && pwd)}"
 
 MPI_HOME="${MPI_HOME:-${BASE_DIR}/mpich/install}"

@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_DIR="${BASE_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+mkdir -p "$SCRIPT_DIR/../temp"
+BASE_DIR="${BASE_DIR:-$(cd "$SCRIPT_DIR/../temp" && pwd)}"
+
 HOSTFILE="${HOSTFILE:-$BASE_DIR/hostsfile.txt}"  # List of all nodes: head + workers
 NIC="${NIC:-enp193s0f0}"
 VENV="${VENV:-$BASE_DIR/.venv}"
