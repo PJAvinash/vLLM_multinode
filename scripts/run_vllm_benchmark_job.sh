@@ -149,7 +149,7 @@ ROCM_PATH="$ROCM_PATH" \
 MPI_HOME="$MPI_HOME" \
 NCCL_SOCKET_IFNAME="$NIC" \
 NCCL_DEBUG_LEVEL="$NCCL_DEBUG_LEVEL" \
-./run_sweep_ssh.sh
+./run_vllm_sweep_ssh.sh
 
 # ------------------------
 # Final cleanup

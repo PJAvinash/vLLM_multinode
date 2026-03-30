@@ -14,6 +14,10 @@ SSH_USER="${SSH_USER:-$USER}"
 VENV="${VENV:-$BASE_DIR/.venv}"
 MODEL="${MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 
+# Executables (Using absolute paths to prevent "command not found")
+RAY_BIN="$VENV/bin/ray"
+VLLM_BIN="$VENV/bin/vllm"
+
 IFACE="${IFACE:-auto}"
 WORKER_IFACE="${WORKER_IFACE:-$IFACE}"
 
@@ -71,7 +75,6 @@ for host in "${HOSTS[@]}"; do
     fi
 done
 
-# fallback if local not found
 if [ -z "$MASTER_HOST" ]; then
     MASTER_HOST="${HOSTS[0]}"
     WORKER_HOSTS=("${HOSTS[@]:1}")
@@ -83,6 +86,7 @@ echo "[INFO] Workers: ${WORKER_HOSTS[*]}"
 
 TOTAL_GPUS=$((GPUS_PER_NODE * (1 + ${#WORKER_HOSTS[@]})))
 TP="${TP:-$TOTAL_GPUS}"
+
 # ------------------------
 # SSH helper
 # ------------------------
@@ -94,45 +98,14 @@ ssh_cmd() {
 }
 
 run_on_head() {
+  local cmd="$1"
   if is_self "$MASTER_HOST"; then
-    bash -lc "$1"
+    bash -lc "$cmd"
   else
-    ssh_cmd "${SSH_USER}@${MASTER_HOST}" "bash -lc $(printf '%q' "$1")"
+    # Improved quoting: send the command as a single quoted string to remote bash
+    ssh_cmd "${SSH_USER}@${MASTER_HOST}" "bash -lc '$cmd'"
   fi
 }
-
-# ------------------------
-# Detect HEAD iface + IP
-# ------------------------
-if [ "$IFACE" = "auto" ]; then
-  IFACE="$(run_on_head "ip -4 -o addr show scope global | awk '\$4 !~ /^169\\.254/ && \$2 !~ /^(lo|docker|virbr|cni|veth)/ {print \$2; exit}'")"
-fi
-
-HEAD_IP="$(run_on_head "ip -4 -o addr show dev $IFACE primary | sed -n '1s/.* inet \\([0-9.]*\\)\\/.*$/\\1/p'")"
-
-[ -n "$HEAD_IP" ] || { echo "Failed to detect HEAD IP"; exit 1; }
-
-# ------------------------
-# Detect worker iface + IPs
-# ------------------------
-declare -A WORKER_IP_MAP
-declare -A WORKER_IFACE_MAP
-
-for w in "${WORKER_HOSTS[@]}"; do
-  target="${SSH_USER}@${w}"
-
-  if [ "$WORKER_IFACE" = "auto" ]; then
-    WORKER_IFACE_MAP["$w"]=$(ssh_cmd "$target" \
-      "ip -4 -o addr show scope global | awk '\$4 !~ /^169\\.254/ && \$2 !~ /^(lo|docker|virbr|cni|veth)/ {print \$2; exit}'")
-  else
-    WORKER_IFACE_MAP["$w"]="$WORKER_IFACE"
-  fi
-
-  WORKER_IP_MAP["$w"]=$(ssh_cmd "$target" \
-    "ip -4 -o addr show dev ${WORKER_IFACE_MAP[$w]} primary | sed -n '1s/.* inet \\([0-9.]*\\)\\/.*$/\\1/p'")
-
-  [ -n "${WORKER_IP_MAP[$w]}" ] || { echo "Failed to detect IP for $w"; exit 1; }
-done
 
 # ------------------------
 # Common env
@@ -148,14 +121,41 @@ export ROCM_PATH=\"$ROCM_PATH\"; \
 export LD_LIBRARY_PATH=\"$MPI_HOME/lib:$RCCL_HOME:$ROCM_PATH/lib:\${LD_LIBRARY_PATH:-}\""
 
 # ------------------------
+# Detect HEAD iface + IP
+# ------------------------
+if [ "$IFACE" = "auto" ]; then
+  IFACE="$(run_on_head "ip -4 -o addr show scope global | awk '\$4 !~ /^169\\.254/ && \$2 !~ /^(lo|docker|virbr|cni|veth)/ {print \$2; exit}'")"
+fi
+
+HEAD_IP="$(run_on_head "ip -4 -o addr show dev $IFACE primary | sed -n '1s/.* inet \\([0-9.]*\\)\\/.*$/\\1/p'")"
+[ -n "$HEAD_IP" ] || { echo "Failed to detect HEAD IP"; exit 1; }
+
+# ------------------------
+# Detect worker iface + IPs
+# ------------------------
+declare -A WORKER_IP_MAP
+declare -A WORKER_IFACE_MAP
+
+for w in "${WORKER_HOSTS[@]}"; do
+  target="${SSH_USER}@${w}"
+  if [ "$WORKER_IFACE" = "auto" ]; then
+    WORKER_IFACE_MAP["$w"]=$(ssh_cmd "$target" "ip -4 -o addr show scope global | awk '\$4 !~ /^169\\.254/ && \$2 !~ /^(lo|docker|virbr|cni|veth)/ {print \$2; exit}'")
+  else
+    WORKER_IFACE_MAP["$w"]="$WORKER_IFACE"
+  fi
+  WORKER_IP_MAP["$w"]=$(ssh_cmd "$target" "ip -4 -o addr show dev ${WORKER_IFACE_MAP[$w]} primary | sed -n '1s/.* inet \\([0-9.]*\\)\\/.*$/\\1/p'")
+  [ -n "${WORKER_IP_MAP[$w]}" ] || { echo "Failed to detect IP for $w"; exit 1; }
+done
+
+# ------------------------
 # Start Ray head
 # ------------------------
 echo "[1/4] Starting Ray head ($MASTER_HOST)"
 run_on_head "$PREP_COMMON; \
 export NCCL_SOCKET_IFNAME=$IFACE; \
 export VLLM_HOST_IP=$HEAD_IP; \
-ray stop --force || true; \
-ray start --head --node-ip-address $HEAD_IP --port 6379 \
+$RAY_BIN stop --force || true; \
+$RAY_BIN start --head --node-ip-address $HEAD_IP --port 6379 \
 --num-gpus $GPUS_PER_NODE --num-cpus $RAY_CPUS \
 --include-dashboard=$RAY_INCLUDE_DASHBOARD"
 
@@ -165,17 +165,16 @@ ray start --head --node-ip-address $HEAD_IP --port 6379 \
 for w in "${WORKER_HOSTS[@]}"; do
   ip="${WORKER_IP_MAP[$w]}"
   iface="${WORKER_IFACE_MAP[$w]}"
-
   echo "[2/4] Worker $w ($ip)"
 
   ssh_cmd "${SSH_USER}@${w}" "bash -lc '$PREP_COMMON; \
     export NCCL_SOCKET_IFNAME=$iface; \
     export VLLM_HOST_IP=$ip; \
-    ray stop --force || true; \
-    ray start --address $HEAD_IP:6379 \
-               --node-ip-address $ip \
-               --num-gpus $GPUS_PER_NODE \
-               --num-cpus $RAY_CPUS'"
+    $RAY_BIN stop --force || true; \
+    $RAY_BIN start --address $HEAD_IP:6379 \
+                --node-ip-address $ip \
+                --num-gpus $GPUS_PER_NODE \
+                --num-cpus $RAY_CPUS'"
 done
 
 # ------------------------
@@ -186,7 +185,7 @@ run_on_head "$PREP_COMMON; \
 export NCCL_SOCKET_IFNAME=$IFACE; \
 export VLLM_HOST_IP=$HEAD_IP; \
 mkdir -p \"$LOGDIR\"; \
-nohup vllm serve \"$MODEL\" \
+nohup $VLLM_BIN serve \"$MODEL\" \
   --host 0.0.0.0 --port $PORT \
   --distributed-executor-backend ray \
   --tensor-parallel-size $TP \
