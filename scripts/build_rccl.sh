@@ -10,7 +10,7 @@ BASE_DIR="${BASE_DIR:-$(cd "$SCRIPT_DIR/../temp" && pwd)}"
 RCCL_INSTALL_DIR=""
 
 # Allow override via environment variables
-BRANCH_NAME="${BRANCH_NAME:-develop}"
+BRANCH_NAME="${BRANCH_NAME:-}"   # optional , but default is set as develop
 COMMIT_HASH="${COMMIT_HASH:-}"   # optional
 
 echo "[INFO] Using branch: ${BRANCH_NAME}"
@@ -32,8 +32,11 @@ if [ "${build_rccl}" -eq 1 ]; then
     git fetch --all
 
     # Checkout branch first
-    git checkout "${BRANCH_NAME}"
-    git pull
+    # If BRANCH_NAME is provided, override branch
+    if [ -n "${BRANCH_NAME}" ]; then
+        git checkout "${BRANCH_NAME}"
+        git pull
+    fi
 
     # If commit hash is provided, override branch
     if [ -n "${COMMIT_HASH}" ]; then
